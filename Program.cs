@@ -1,32 +1,17 @@
-﻿using HtmlAgilityPack;
-using System.Text;
-using System.Transactions;
+﻿using System.Text;
+using System.Text.Json;
 
-Console.WriteLine("Hello, World!");
-await GetTranslations();
+Console.Write("Enter a sentence to translate: ");
+string userInput = Console.ReadLine() ?? throw new NullReferenceException();
 
-static async Task GetTranslations()
+string translated = string.Join("\n", await GetTranslations(userInput));
+Console.WriteLine("Translated: \n" + translated);
+
+static async Task<List<string>> GetTranslations(string text, string targetLang = "DE")
 {
-    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-    using HttpClient client = CreateHttpClient();
+    using HttpClient client = new HttpClient();
 
-    Console.Write("Enter a sentence to translate: ");
-    string userInput = Console.ReadLine() ?? throw new NullReferenceException();
-
-    string responseBody = await RequestTranslations(client, userInput);
-
-    string result = ExtractTranslatedWord(responseBody);
-
-    Console.WriteLine("\nTranslation Response:\n");
-    Console.WriteLine(result);
-    GetTopTranslations(responseBody).ForEach(x => Console.WriteLine(x.Name));
-}
-
-static HttpClient CreateHttpClient()
-{
-    HttpClient client = new HttpClient();
-
-    client.DefaultRequestHeaders.Add("Accept", "text/html");
+    client.DefaultRequestHeaders.Add("Accept", "*/*");
     client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9,ru;q=0.8");
     client.DefaultRequestHeaders.Add("Priority", "u=1, i");
     client.DefaultRequestHeaders.Add("Sec-CH-UA", "\"Not A(Brand\";v=\"8\", \"Chromium\";v=\"132\", \"Google Chrome\";v=\"132\"");
@@ -36,70 +21,185 @@ static HttpClient CreateHttpClient()
     client.DefaultRequestHeaders.Add("Sec-Fetch-Mode", "cors");
     client.DefaultRequestHeaders.Add("Sec-Fetch-Site", "same-site");
 
-    return client;
-}
+    client.DefaultRequestHeaders.Referrer = new Uri("https://www.deepl.com/");
 
-static async Task<string> RequestTranslations(HttpClient client, string userInput)
-{
-    string encodedQuery = "query=" + Uri.EscapeDataString("###" + userInput);
-    var content = new StringContent(encodedQuery, Encoding.UTF8, "application/x-www-form-urlencoded");
-
-    var request = new HttpRequestMessage(HttpMethod.Post,
-        "https://dict.deepl.com/english-german/search?ajax=1&source=english&onlyDictEntries=1&translator=dnsof7h3k2lgh3gda&kind=context&eventkind=click&forleftside=true&il=en")
+    // Create JSON request body
+    var requestBody = new
     {
-        Content = content
+        jsonrpc = "2.0",
+        method = "LMT_handle_jobs",
+        @params = new
+        {
+            jobs = new[]
+            {
+                new
+                {
+                    kind = "default",
+                    sentences = new[]
+                    {
+                        new { text = text, id = 1, prefix = "" }
+                    },
+                    raw_en_context_before = new string[] { },
+                    raw_en_context_after = new string[] { },
+                    preferred_num_beams = 4
+                }
+            },
+            lang = new
+            {
+                target_lang = targetLang,
+                preference = new { weight = new { }, @default = "default" },
+                source_lang_computed = "EN"
+            },
+            priority = 1,
+            commonJobParams = new
+            {
+                quality = "normal",
+                mode = "translate",
+                browserType = 1,
+                textType = "plaintext"
+            },
+            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        },
+        id = 34510999
     };
 
-    request.Headers.Referrer = new Uri("https://www.deepl.com/");
+    string jsonString = JsonSerializer.Serialize(requestBody);
+    var content = new StringContent(jsonString, Encoding.UTF8, "application/json");
 
-    HttpResponseMessage response = await client.SendAsync(request);
-    var bytes = await response.Content.ReadAsByteArrayAsync();
-    string responseBody = Encoding.GetEncoding("iso-8859-15").GetString(bytes);
-    return responseBody;
+    //HttpResponseMessage response = await client.PostAsync("https://www2.deepl.com/jsonrpc?method=LMT_handle_jobs", content);
+    //string responseBody = await response.Content.ReadAsStringAsync();
+    string responseBody = GetFakeResponseContent();
+
+Start:
+    try
+    {
+        return ExtractAllTranslations(responseBody);
+    }
+    catch
+    {
+        Console.WriteLine(responseBody);
+        Console.WriteLine("Press enter to try again");
+        Console.ReadLine();
+        goto Start;
+    }
 }
 
-static string ExtractTranslatedWord(string responseBody)
+static List<string> ExtractAllTranslations(string responseBody)
 {
-    var htmlDoc = new HtmlDocument();
-    htmlDoc.LoadHtml(responseBody);
+    List<string> allTranslations = new List<string>();
 
-    var translatedWordNode = htmlDoc.DocumentNode.SelectSingleNode("//a[contains(@class, 'dictLink featured')]");
+    using (JsonDocument doc = JsonDocument.Parse(responseBody))
+    {
+        var root = doc.RootElement;
 
-    return translatedWordNode != null ? translatedWordNode.InnerText.Trim() : "No translation found.";
+        // Navigate to the translations array in the response
+        var translations = root.GetProperty("result").GetProperty("translations");
+
+        if (translations.GetArrayLength() > 0)
+        {
+            // Iterate over all translations
+            foreach (var translation in translations.EnumerateArray())
+            {
+                var beams = translation.GetProperty("beams");
+
+                // Iterate over all beams for this translation
+                foreach (var beam in beams.EnumerateArray())
+                {
+                    // Get all sentences from the beam
+                    var sentences = beam.GetProperty("sentences");
+
+                    // Iterate over all sentences in the beam
+                    foreach (var sentence in sentences.EnumerateArray())
+                    {
+                        // Extract the translated text
+                        var translatedText = sentence.GetProperty("text").GetString();
+                        if (!string.IsNullOrEmpty(translatedText))
+                        {
+                            allTranslations.Add(translatedText);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Return all translated texts
+    return allTranslations;
 }
 
-static List<Translation> GetTopTranslations(string htmlContent)
-{
-    // Load the HTML into an HtmlDocument
-    var htmlDoc = new HtmlDocument();
-    htmlDoc.LoadHtml(htmlContent);
-
-    // Find all the translation entries (assuming they have the class 'translation')
-    var translations = htmlDoc.DocumentNode
-                              .SelectNodes("//div[contains(@class, 'translation')]")
-                              .Select(node => new Translation
-                              {
-                                  Name = node.SelectSingleNode(".//a").InnerText.Trim(),
-                                  Commonness = GetCommonness(node)
-                              })
-                              .ToList();
-
-    // Sort the translations by commonness (in descending order) and take the top 5
-    return translations.DistinctBy(t => t.Name)
-                       .OrderByDescending(t => t.Commonness)
-                       //.Take(5)
-                       .ToList();
-}
-
-static int GetCommonness(HtmlNode translationNode)
-{
-    // In this example, we'll use the index of the translation as a proxy for commonness
-    // This could be adjusted based on a more sophisticated criterion if necessary
-    var indexNode = translationNode.SelectSingleNode(".//h3[contains(@class, 'translation_desc')]");
-    return indexNode != null ? int.Parse(indexNode.GetAttributeValue("bid", "0")) : 0;
-}
-public class Translation
-{
-    public string Name { get; set; } = string.Empty;
-    public int Commonness { get; set; }
-}
+static string GetFakeResponseContent() => 
+    """
+    {
+      "jsonrpc": "2.0",
+      "id": 34510036,
+      "result": {
+        "translations": [
+          {
+            "beams": [
+              {
+                "sentences": [
+                  {
+                    "text": "schöne Mütze Mann",
+                    "ids": [
+                      1
+                    ]
+                  }
+                ],
+                "num_symbols": 6,
+                "rephrase_variant": {
+                  "name": "OfDqUK5kIjQY5s6YfyfUEaW0meXtZesz8IL8Cw=="
+                }
+              },
+              {
+                "sentences": [
+                  {
+                    "text": "Schöne Mütze, Mann",
+                    "ids": [
+                      1
+                    ]
+                  }
+                ],
+                "num_symbols": 7,
+                "rephrase_variant": {
+                  "name": "OD+yHLIgBzg+ULZsLqf7BLMORTOHHDxkdYbBZg=="
+                }
+              },
+              {
+                "sentences": [
+                  {
+                    "text": "Schöne Kappe, Mann",
+                    "ids": [
+                      1
+                    ]
+                  }
+                ],
+                "num_symbols": 7,
+                "rephrase_variant": {
+                  "name": "P1pAUcuKR0JzqJxaezDG9RIdjQ/i0QhHPv/XwA=="
+                }
+              },
+              {
+                "sentences": [
+                  {
+                    "text": "Nette Mütze Mann",
+                    "ids": [
+                      1
+                    ]
+                  }
+                ],
+                "num_symbols": 7,
+                "rephrase_variant": {
+                  "name": "xpDkI6rtv0DnWHLAesyhorXVY7GKNpdyNzdQAg=="
+                }
+              }
+            ],
+            "quality": "normal"
+          }
+        ],
+        "target_lang": "DE",
+        "source_lang": "EN",
+        "source_lang_is_confident": false,
+        "detectedLanguages": {}
+      }
+    }
+    """;
