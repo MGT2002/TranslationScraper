@@ -1,13 +1,19 @@
 ﻿using System.Text;
 using System.Text.Json;
 
-Console.Write("Enter a sentence to translate: ");
-string userInput = Console.ReadLine() ?? throw new NullReferenceException();
+bool enableTestMode = false;
 
-string translated = string.Join("\n", await GetTranslations(userInput));
+string userInput = string.Empty;
+if (!enableTestMode)
+{
+    Console.Write("Enter a sentence to translate: ");
+    userInput = Console.ReadLine() ?? throw new NullReferenceException();
+}
+
+string translated = string.Join("\n", await GetTranslations(userInput, testMode: enableTestMode));
 Console.WriteLine("Translated: \n" + translated);
 
-static async Task<List<string>> GetTranslations(string text, string targetLang = "DE")
+static async Task<List<string>> GetTranslations(string text, string targetLang = "DE", bool testMode = false)
 {
     using HttpClient client = new HttpClient();
 
@@ -23,52 +29,21 @@ static async Task<List<string>> GetTranslations(string text, string targetLang =
 
     client.DefaultRequestHeaders.Referrer = new Uri("https://www.deepl.com/");
 
-    // Create JSON request body
-    var requestBody = new
-    {
-        jsonrpc = "2.0",
-        method = "LMT_handle_jobs",
-        @params = new
-        {
-            jobs = new[]
-            {
-                new
-                {
-                    kind = "default",
-                    sentences = new[]
-                    {
-                        new { text = text, id = 1, prefix = "" }
-                    },
-                    raw_en_context_before = new string[] { },
-                    raw_en_context_after = new string[] { },
-                    preferred_num_beams = 4
-                }
-            },
-            lang = new
-            {
-                target_lang = targetLang,
-                preference = new { weight = new { }, @default = "default" },
-                source_lang_computed = "EN"
-            },
-            priority = 1,
-            commonJobParams = new
-            {
-                quality = "normal",
-                mode = "translate",
-                browserType = 1,
-                textType = "plaintext"
-            },
-            timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-        },
-        id = 34510999
-    };
+    object requestBody = CreateRequestBody(text, targetLang);
 
     string jsonString = JsonSerializer.Serialize(requestBody);
     var content = new StringContent(jsonString, Encoding.UTF8, "application/json");
 
-    //HttpResponseMessage response = await client.PostAsync("https://www2.deepl.com/jsonrpc?method=LMT_handle_jobs", content);
-    //string responseBody = await response.Content.ReadAsStringAsync();
-    string responseBody = GetFakeResponseContent();
+    string responseBody = string.Empty;
+    if (!testMode)
+    {
+        HttpResponseMessage response = await client.PostAsync("https://www2.deepl.com/jsonrpc?method=LMT_handle_jobs", content);
+        responseBody = await response.Content.ReadAsStringAsync();
+    }
+    else
+    {
+        responseBody = GetFakeResponseContent();
+    }
 
 Start:
     try
@@ -127,11 +102,11 @@ static List<string> ExtractAllTranslations(string responseBody)
     return allTranslations;
 }
 
-static string GetFakeResponseContent() => 
+static string GetFakeResponseContent() =>
     """
     {
       "jsonrpc": "2.0",
-      "id": 34510036,
+      "id": 34610036,
       "result": {
         "translations": [
           {
@@ -203,3 +178,43 @@ static string GetFakeResponseContent() =>
       }
     }
     """;
+
+static object CreateRequestBody(string text, string targetLang) =>
+new
+{
+    jsonrpc = "2.0",
+    method = "LMT_handle_jobs",
+    @params = new
+    {
+        jobs = new[]
+        {
+            new
+            {
+                kind = "default",
+                sentences = new[]
+                {
+                    new { text = text, id = 1, prefix = "" }
+                },
+                raw_en_context_before = new string[] { },
+                raw_en_context_after = new string[] { },
+                preferred_num_beams = 4
+            }
+        },
+        lang = new
+        {
+            target_lang = targetLang,
+            preference = new { weight = new { }, @default = "default" },
+            source_lang_computed = "EN"
+        },
+        priority = 1,
+        commonJobParams = new
+        {
+            quality = "normal",
+            mode = "translate",
+            browserType = 1,
+            textType = "plaintext"
+        },
+        timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+    },
+    id = 39610999
+};
